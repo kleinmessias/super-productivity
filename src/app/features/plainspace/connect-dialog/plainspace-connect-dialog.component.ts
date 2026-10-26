@@ -124,9 +124,20 @@ export class PlainspaceConnectDialogComponent {
   });
 
   readonly T = T;
-  readonly host = this._data?.host || 'https://plainspace.org';
-  // Trailing slash stripped so we never produce a double slash.
-  private readonly _origin = this.host.replace(/\/+$/, '');
+  private _host = (this._data?.host ?? 'https://plainspace.org').trim();
+
+  get host(): string {
+    return this._host || 'https://plainspace.org';
+  }
+
+  set host(value: string) {
+    this._host = (value ?? '').trim() || 'https://plainspace.org';
+  }
+
+  private get _origin(): string {
+    return this.host.replace(/\/+$/, '');
+  }
+
   // Deep link to the dedicated "from Super Productivity" onboarding flow, which
   // guides token creation — instead of dropping the user on the bare marketing
   // host.
