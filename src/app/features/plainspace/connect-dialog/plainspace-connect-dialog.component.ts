@@ -77,6 +77,7 @@ const ATTEMPT_WAIT_MIN = 15;
 // Plainspace's `MAX_PROJECT_NAME_LENGTH` and `MAX_DISPLAY_NAME_LENGTH`.
 const MAX_SPACE_NAME_LENGTH = 100;
 const MAX_DISPLAY_NAME_LENGTH = 40;
+const DEFAULT_PLAINSPACE_HOST = 'https://plainspace.org';
 
 /**
  * "Connect to Plainspace": signs in or signs up with an emailed 6-digit code,
@@ -124,18 +125,51 @@ export class PlainspaceConnectDialogComponent {
   });
 
   readonly T = T;
-  private _host = (this._data?.host ?? 'https://plainspace.org').trim();
+  readonly defaultHost = DEFAULT_PLAINSPACE_HOST;
+  hostInput = (this._data?.host ?? this.defaultHost).trim();
 
   get host(): string {
-    return this._host || 'https://plainspace.org';
+    return this._normalizeHost(this.hostInput);
   }
 
-  set host(value: string) {
-    this._host = (value ?? '').trim() || 'https://plainspace.org';
+  private _normalizeHost(value: string | null | undefined): string {
+    const raw = (value ?? '').trim();
+    if (!raw) {
+      return this.defaultHost;
+    }
+    const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const url = new URL(normalized);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return this.defaultHost;
+      }
+      return url.origin.replace(/\/+$/, '');
+    } catch {
+      return this.defaultHost;
+    }
   }
 
-  private get _origin(): string {
-    return this.host.replace(/\/+$/, '');
+  private _isHostValid(value: string | null | undefined): boolean {
+    const raw = (value ?? '').trim();
+    if (!raw) {
+      return true;
+    }
+    const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const url = new URL(candidate);
+      return ['http:', 'https:'].includes(url.protocol);
+    } catch {
+      return false;
+    }
+  }
+
+  private _hostForRequest(): string {
+    const input = this.hostInput.trim();
+    if (!this._isHostValid(input)) {
+      this.error.set({ key: 'PLAINSPACE.CONNECT.INVALID_HOST' });
+      return this.defaultHost;
+    }
+    return this._normalizeHost(input);
   }
 
   // Deep link to the dedicated "from Super Productivity" onboarding flow, which
@@ -147,14 +181,14 @@ export class PlainspaceConnectDialogComponent {
   // scheme (mobile uses a different one, web none), so gate it on IS_ELECTRON —
   // otherwise the page would render dead "Open Super Productivity" buttons.
   readonly connectUrl =
-    `${this._origin}/connect/super-productivity` +
+    `${this.host.replace(/\/+$/, '')}/connect/super-productivity` +
     (IS_ELECTRON
       ? `?return=${encodeURIComponent('superproductivity://plainspace-connect')}`
       : '');
   // The host's own terms apply (self-hosters' included); SP copies no legal text.
   readonly legalParams = {
-    termsUrl: `${this._origin}/terms`,
-    privacyUrl: `${this._origin}/privacy`,
+    termsUrl: `${this.host.replace(/\/+$/, '')}/terms`,
+    privacyUrl: `${this.host.replace(/\/+$/, '')}/privacy`,
   };
   readonly maxDisplayNameLength = MAX_DISPLAY_NAME_LENGTH;
 
@@ -202,9 +236,10 @@ export class PlainspaceConnectDialogComponent {
     if (!email || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
-    const res = await firstValueFrom(this._authApi.requestCode$(this.host, email));
+    const res = await firstValueFrom(this._authApi.requestCode$(host, email));
     this.isBusy.set(false);
     switch (res.status) {
       case 'sent':
@@ -236,25 +271,26 @@ export class PlainspaceConnectDialogComponent {
     if (!this.isCodeValid() || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
     let oldTokens: string[] = [];
     if (force) {
       // Before the replacement revokes it, while it still answers.
-      oldTokens = await this._accountService.findAccountTokens(this.host, this.sentTo());
+      oldTokens = await this._accountService.findAccountTokens(host, this.sentTo());
     }
     const res = await firstValueFrom(
-      this._authApi.connect$(this.host, this.sentTo(), this.code, force),
+      this._authApi.connect$(host, this.sentTo(), this.code, force),
     );
     switch (res.status) {
       case 'connected':
-        await this._finish(res.token, oldTokens, null);
+        await this._finish(res.token, oldTokens, null, host);
         return;
       case 'already-connected': {
         // Using a key this device already holds keeps every other device and
         // app connected; replacing it is only offered next to that.
         const [existing] = await this._accountService.findAccountTokens(
-          this.host,
+          host,
           this.sentTo(),
         );
         this.isBusy.set(false);
@@ -284,11 +320,12 @@ export class PlainspaceConnectDialogComponent {
     if (!token || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
     const res = await this._accountService.connect(
       token,
-      this.host,
+      host,
       this._data?.replacedToken,
     );
     if (res === 'ok') {
@@ -305,9 +342,10 @@ export class PlainspaceConnectDialogComponent {
     if (!key || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
-    await this._finish(key.token, key.oldTokens, key.createdSpaceId);
+    await this._finish(key.token, key.oldTokens, key.createdSpaceId, host);
   }
 
   /** A new account: create its first Space, then mint its key. */
@@ -316,10 +354,11 @@ export class PlainspaceConnectDialogComponent {
     if (!displayName || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
     const res = await firstValueFrom(
-      this._authApi.createSpace$(this.host, {
+      this._authApi.createSpace$(host, {
         name: this._spaceName(displayName),
         displayName,
         email: this.sentTo(),
@@ -332,7 +371,7 @@ export class PlainspaceConnectDialogComponent {
       return;
     }
     const token = await firstValueFrom(
-      this._authApi.createApiToken$(this.host, res.space),
+      this._authApi.createApiToken$(host, res.space),
     );
     if (!token) {
       // The account and its Space exist now; the browser path finishes it.
@@ -341,7 +380,7 @@ export class PlainspaceConnectDialogComponent {
       this.step.set('browser');
       return;
     }
-    await this._finish(token, [], res.space.id);
+    await this._finish(token, [], res.space.id, host);
   }
 
   /** The browser step: validates and stores a pasted token. */
@@ -350,11 +389,12 @@ export class PlainspaceConnectDialogComponent {
     if (!token || this.isBusy()) {
       return;
     }
+    const host = this._hostForRequest();
     this.isBusy.set(true);
     this.error.set(null);
     const res: PlainspaceConnectResult = await this._accountService.connect(
       token,
-      this.host,
+      host,
       this._data?.replacedToken,
     );
     if (res === 'ok') {
@@ -393,11 +433,12 @@ export class PlainspaceConnectDialogComponent {
     token: string,
     oldTokens: string[],
     createdSpaceId: string | null,
+    host: string,
   ): Promise<void> {
     const store = (): Promise<PlainspaceConnectResult> =>
       this._accountService.connect(
         token,
-        this.host,
+        host,
         this._data?.replacedToken,
         oldTokens,
       );
